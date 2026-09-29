@@ -10,6 +10,7 @@ const MAX_REQUEST_BYTES: usize = 64 * 1024;
 struct Config {
     bind_address: String,
     test_mode: bool,
+    accept_stale_token_fault: bool,
 }
 
 struct HttpRequest {
@@ -43,13 +44,17 @@ impl HttpResponse {
 struct Coordinator {
     scheduler: Scheduler<Value>,
     test_mode: bool,
+    accept_stale_token_fault: bool,
+    commits: Vec<Value>,
 }
 
 impl Coordinator {
-    fn new(test_mode: bool) -> Self {
+    fn new(test_mode: bool, accept_stale_token_fault: bool) -> Self {
         Self {
             scheduler: Scheduler::new(LEASE_DURATION).expect("lease duration must be positive"),
             test_mode,
+            accept_stale_token_fault,
+            commits: Vec::new(),
         }
     }
 
@@ -162,8 +167,36 @@ impl Coordinator {
             return invalid_request("token must be a positive integer");
         };
 
-        match self.scheduler.complete(worker_id, job_id, token as u32) {
-            Ok(job) => HttpResponse::json("200 OK", job_json(job)),
+        let supplied_token = token as u32;
+        let current_lease = self
+            .scheduler
+            .job(job_id)
+            .and_then(|job| job.lease.as_ref())
+            .map(|lease| (lease.worker_id.clone(), lease.token, lease.expiry));
+        let effective_token = match &current_lease {
+            Some((owner, current_token, _))
+                if self.accept_stale_token_fault
+                    && owner == worker_id
+                    && supplied_token != *current_token =>
+            {
+                *current_token
+            }
+            _ => supplied_token,
+        };
+        let accepted_at = self.scheduler.now();
+
+        match self.scheduler.complete(worker_id, job_id, effective_token) {
+            Ok(job) => {
+                let (_, _, expiry) = current_lease.expect("accepted completion had a lease");
+                self.commits.push(json!({
+                    "job_id": job_id,
+                    "worker_id": worker_id,
+                    "token": supplied_token,
+                    "accepted_at": accepted_at,
+                    "expiry": expiry,
+                }));
+                HttpResponse::json("200 OK", job_json(job))
+            }
             Err(error) => transition_error(error),
         }
     }
@@ -206,6 +239,7 @@ impl Coordinator {
                 "now": self.scheduler.now(),
                 "jobs": self.scheduler.jobs().map(job_json).collect::<Vec<_>>(),
                 "crashed_workers": self.scheduler.crashed_workers().collect::<Vec<_>>(),
+                "commits": &self.commits,
             }),
         )
     }
@@ -214,7 +248,7 @@ impl Coordinator {
 fn main() -> std::io::Result<()> {
     let config = parse_config()?;
     let listener = TcpListener::bind(&config.bind_address)?;
-    let mut coordinator = Coordinator::new(config.test_mode);
+    let mut coordinator = Coordinator::new(config.test_mode, config.accept_stale_token_fault);
 
     println!("LISTENING {}", listener.local_addr()?);
     std::io::stdout().flush()?;
@@ -232,26 +266,33 @@ fn main() -> std::io::Result<()> {
 fn parse_config() -> std::io::Result<Config> {
     let mut bind_address = "127.0.0.1:8080".to_owned();
     let mut test_mode = false;
+    let mut accept_stale_token_fault = false;
     let mut args = env::args().skip(1);
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--bind" => bind_address = args.next().ok_or_else(usage_error)?,
             "--test-mode" => test_mode = true,
+            "--fault-accept-stale-token" => accept_stale_token_fault = true,
             _ => return Err(usage_error()),
         }
+    }
+
+    if accept_stale_token_fault && !test_mode {
+        return Err(usage_error());
     }
 
     Ok(Config {
         bind_address,
         test_mode,
+        accept_stale_token_fault,
     })
 }
 
 fn usage_error() -> std::io::Error {
     std::io::Error::new(
         std::io::ErrorKind::InvalidInput,
-        "usage: coordinator [--bind ADDRESS] [--test-mode]",
+        "usage: coordinator [--bind ADDRESS] [--test-mode] [--fault-accept-stale-token]",
     )
 }
 

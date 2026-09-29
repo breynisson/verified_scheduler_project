@@ -1,0 +1,25 @@
+[
+  {
+    "job_id": "job-a",
+    "operation": "submit",
+    "payload": {}
+  },
+  {
+    "operation": "acquire",
+    "worker_id": "worker-1"
+  },
+  {
+    "delta": 1,
+    "operation": "advance_time"
+  },
+  {
+    "operation": "acquire",
+    "worker_id": "worker-2"
+  },
+  {
+    "job_id": "job-a",
+    "operation": "complete",
+    "token": 1,
+    "worker_id": "worker-2"
+  }
+]

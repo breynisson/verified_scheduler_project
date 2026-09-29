@@ -16,6 +16,7 @@ rm -rf "$artifact_dir"
 mkdir -p "$artifact_dir"
 
 export TEST_ARTIFACT_DIR="$artifact_dir"
+export PYTHONPATH="$repository_root/verification/python${PYTHONPATH:+:$PYTHONPATH}"
 exec "$repository_root/.venv/bin/python" -m pytest \
-    "$repository_root/verification/python/tests/test_health.py" \
+    "$repository_root/verification/python/tests" \
     --junitxml="$artifact_dir/pytest.xml"

@@ -1,0 +1,22 @@
+from dataclasses import dataclass
+from typing import Any, Protocol
+
+
+@dataclass(frozen=True)
+class Outcome:
+    status: int
+    body: Any
+
+
+class SchedulerAdapter(Protocol):
+    def submit(self, job_id: str, payload: dict) -> Outcome: ...
+
+    def acquire(self, worker_id: str) -> Outcome: ...
+
+    def complete(self, worker_id: str, job_id: str, token: int) -> Outcome: ...
+
+    def crash(self, worker_id: str) -> Outcome: ...
+
+    def advance_time(self, delta: int) -> Outcome: ...
+
+    def state(self) -> dict: ...

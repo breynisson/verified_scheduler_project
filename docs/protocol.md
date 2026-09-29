@@ -1,6 +1,6 @@
 # Scheduler protocol contract
 
-This document fixes the protocol choices that future TLA+, Rust, and Python implementations must share. Phase 0 implements only `GET /health`; the scheduler operations below are a contract for later phases, not an implemented API.
+This document fixes the protocol choices that TLA+, Rust, and Python implementations must share. Phase 2 implements the scheduler operations below with an in-memory coordinator; later phases extend the verification harness, worker behavior, and persistence.
 
 ## State and lifecycle
 
@@ -75,9 +75,7 @@ Each HTTP scheduler operation will be one atomic transition at a single coordina
 
 ## Decisions intentionally left open
 
-- Lease duration and whether it is globally fixed or configuration-driven.
-- Which pending job is selected when several are eligible.
 - Maximum job ID, worker ID, payload, and request sizes.
-- Whether resubmitting an identical job should remain a conflict or become idempotent.
-- The exact state/debug response schema and diagnostic-log ordering.
 - Whether a crash marker can be cleared and how worker recovery is represented.
+
+The Phase 2 choices for lease duration, job selection, duplicate submission, diagnostic ordering, and debug responses are recorded in [`decisions/0001-phase-2-http-policy.md`](decisions/0001-phase-2-http-policy.md).

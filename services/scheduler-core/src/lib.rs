@@ -89,6 +89,11 @@ impl<P> Scheduler<P> {
         self.jobs.values()
     }
 
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn crashed_workers(&self) -> impl Iterator<Item = &str> {
+        self.crashed_workers.iter().map(String::as_str)
+    }
+
     pub fn submit(&mut self, job_id: String, payload: P) -> Result<&Job<P>, TransitionError> {
         if self.jobs.contains_key(&job_id) {
             return Err(TransitionError::JobAlreadyExists);
@@ -134,12 +139,30 @@ impl<P> Scheduler<P> {
         Ok(lease)
     }
 
+    pub fn acquire_next(&mut self, worker_id: &str) -> Result<Option<&Job<P>>, TransitionError> {
+        if self.crashed_workers.contains(worker_id) {
+            return Err(TransitionError::WorkerCrashed);
+        }
+
+        let Some(job_id) = self
+            .jobs
+            .iter()
+            .find(|(_, job)| job.status == JobStatus::Pending && job.attempts < MAX_ATTEMPTS)
+            .map(|(job_id, _)| job_id.clone())
+        else {
+            return Ok(None);
+        };
+
+        self.acquire(worker_id, &job_id)?;
+        Ok(self.jobs.get(&job_id))
+    }
+
     pub fn complete(
         &mut self,
         worker_id: &str,
         job_id: &str,
         token: u32,
-    ) -> Result<(), TransitionError> {
+    ) -> Result<&Job<P>, TransitionError> {
         let job = self.jobs.get_mut(job_id).ok_or(TransitionError::NotFound)?;
         if job.status != JobStatus::Leased {
             return Err(TransitionError::InvalidJobState);
@@ -149,19 +172,19 @@ impl<P> Scheduler<P> {
         if self.now >= lease.expiry {
             return Err(TransitionError::LeaseExpired);
         }
-        if self.crashed_workers.contains(worker_id) {
-            return Err(TransitionError::WorkerCrashed);
-        }
         if lease.worker_id != worker_id {
             return Err(TransitionError::LeaseOwnerMismatch);
         }
         if lease.token != token {
             return Err(TransitionError::StaleFencingToken);
         }
+        if self.crashed_workers.contains(worker_id) {
+            return Err(TransitionError::WorkerCrashed);
+        }
 
         job.status = JobStatus::Completed;
         job.lease = None;
-        Ok(())
+        Ok(job)
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -245,6 +268,19 @@ mod tests {
         assert_eq!(job.status, JobStatus::Leased);
         assert_eq!(job.attempts, 1);
         assert_eq!(job.token, 1);
+    }
+
+    #[test]
+    fn acquire_next_selects_pending_jobs_in_lexicographic_order() {
+        let mut scheduler = scheduler();
+        scheduler.submit("job-b".into(), "payload-b").unwrap();
+        scheduler.submit("job-a".into(), "payload-a").unwrap();
+
+        let acquired = scheduler.acquire_next("worker-1").unwrap().unwrap();
+
+        assert_eq!(acquired.id, "job-a");
+        assert_eq!(acquired.status, JobStatus::Leased);
+        assert_eq!(scheduler.job("job-b").unwrap().status, JobStatus::Pending);
     }
 
     #[test]

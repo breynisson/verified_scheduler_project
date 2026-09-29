@@ -7,6 +7,7 @@ fn main() -> std::io::Result<()> {
     let listener = TcpListener::bind(&bind_address)?;
 
     println!("LISTENING {}", listener.local_addr()?);
+    std::io::stdout().flush()?;
 
     for stream in listener.incoming() {
         match stream {

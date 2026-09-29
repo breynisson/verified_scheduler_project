@@ -28,10 +28,16 @@ cargo test --workspace
 
 python3 -m venv .venv
 .venv/bin/python -m pip install --requirement verification/python/requirements-dev.lock
-.venv/bin/python -m pytest verification/python/tests/test_health.py
+scripts/test-system.sh
 ```
 
-The smoke test starts the coordinator on an OS-assigned loopback port and always terminates that process. Each test therefore receives isolated server state.
+The smoke test starts the coordinator on an OS-assigned loopback port and always terminates that process. Each test therefore receives isolated server state. Its coordinator logs and JUnit report are written to `artifacts/test-runs/latest/`; each run replaces the previous one.
+
+To preserve a named run instead, set `TEST_RUN_NAME`:
+
+```sh
+TEST_RUN_NAME=phase-0-baseline scripts/test-system.sh
+```
 
 ## Current scope
 

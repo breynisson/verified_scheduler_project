@@ -6,6 +6,7 @@ A learning project for specifying a leased-job protocol in TLA+, implementing it
 
 - Rust 1.98.1 with Cargo (installed automatically by `rustup` from `rust-toolchain.toml`)
 - Python 3.11 or newer
+- Java 11 or newer for the TLA+ tools
 
 ## Run the coordinator
 
@@ -25,6 +26,9 @@ Expected response:
 ```sh
 cargo fmt --all -- --check
 cargo test --workspace
+scripts/check-spec.sh
+scripts/check-spec.sh liveness
+scripts/check-spec.sh stale-mutation
 
 python3 -m venv .venv
 .venv/bin/python -m pip install --requirement verification/python/requirements-dev.lock
@@ -43,4 +47,6 @@ TEST_RUN_NAME=phase-0-baseline scripts/test-system.sh
 
 ## Current scope
 
-The future protocol and explicit Phase 0 decisions are in [`docs/protocol.md`](docs/protocol.md). The original project guide remains in [`verified_scheduler_project.md`](verified_scheduler_project.md). TLA+, scheduler transitions, worker behavior, test/debug routes, and stateful Hypothesis tests begin in later phases.
+The protocol is in [`docs/protocol.md`](docs/protocol.md), and requirement-to-evidence mappings are in [`docs/traceability.md`](docs/traceability.md). The Phase 1 model checks S1-S5 over a finite safety configuration and L1 over a smaller configuration with explicit fairness assumptions. The stale mutation command succeeds only when TLC finds the expected S2 violation. The script downloads TLA+ Tools 1.7.4 and verifies its published checksum.
+
+Rust scheduler transitions, worker behavior, test/debug routes, and stateful Hypothesis tests remain future work. The original project guide is in [`verified_scheduler_project.md`](verified_scheduler_project.md).

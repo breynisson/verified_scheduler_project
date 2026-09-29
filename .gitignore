@@ -1,5 +1,7 @@
 /.venv/
+/.tools/
 /artifacts/test-runs/
+/artifacts/tlc/
 /target/
 __pycache__/
 .pytest_cache/

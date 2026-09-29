@@ -30,10 +30,27 @@ def wait_for_listening_address(process, stdout_path, stderr_path):
     raise RuntimeError("coordinator did not announce its address within 30 seconds")
 
 
+@pytest.fixture(scope="session")
+def artifact_dir():
+    path = pathlib.Path(os.environ.get("TEST_ARTIFACT_DIR", DEFAULT_ARTIFACT_DIR))
+    path.mkdir(parents=True, exist_ok=True)
+    (path / "http-transcript.jsonl").write_text("")
+    return path
+
+
+def record_http_exchange(artifact_dir, method, path, status, response):
+    record = {
+        "method": method,
+        "path": path,
+        "status": status,
+        "response": response,
+    }
+    with (artifact_dir / "http-transcript.jsonl").open("a") as transcript:
+        transcript.write(json.dumps(record, separators=(",", ":"), sort_keys=True) + "\n")
+
+
 @pytest.fixture
-def coordinator_url():
-    artifact_dir = pathlib.Path(os.environ.get("TEST_ARTIFACT_DIR", DEFAULT_ARTIFACT_DIR))
-    artifact_dir.mkdir(parents=True, exist_ok=True)
+def coordinator_url(artifact_dir):
     stdout_path = artifact_dir / "coordinator.stdout.log"
     stderr_path = artifact_dir / "coordinator.stderr.log"
 
@@ -66,7 +83,11 @@ def coordinator_url():
                 process.wait(timeout=5)
 
 
-def test_health(coordinator_url):
+def test_health(coordinator_url, artifact_dir):
     with urllib.request.urlopen(f"{coordinator_url}/health", timeout=5) as response:
-        assert response.status == 200
-        assert json.load(response) == {"status": "ok"}
+        status = response.status
+        body = json.load(response)
+
+    record_http_exchange(artifact_dir, "GET", "/health", status, body)
+    assert status == 200
+    assert body == {"status": "ok"}

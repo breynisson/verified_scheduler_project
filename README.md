@@ -31,7 +31,9 @@ python3 -m venv .venv
 scripts/test-system.sh
 ```
 
-The smoke test starts the coordinator on an OS-assigned loopback port and always terminates that process. Each test therefore receives isolated server state. Its coordinator logs and JUnit report are written to `artifacts/test-runs/latest/`; each run replaces the previous one.
+The smoke test starts the coordinator on an OS-assigned loopback port and always terminates that process. Each test therefore receives isolated server state. Its coordinator logs, client-observed HTTP transcript, and JUnit report are written to `artifacts/test-runs/latest/`; each run replaces the previous one.
+
+The newline-delimited `http-transcript.jsonl` records each request method and path plus the response status and JSON body. It intentionally omits the ephemeral server address.
 
 To preserve a named run instead, set `TEST_RUN_NAME`:
 

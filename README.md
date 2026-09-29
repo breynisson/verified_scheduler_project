@@ -1,6 +1,6 @@
 # Verified Scheduler
 
-A learning project for specifying a leased-job protocol in TLA+, implementing it in Rust, and testing the running system from Python with Hypothesis. Phase 0 contains only the contract, workspace scaffolding, and a coordinator health endpoint. Scheduler transitions are deliberately not implemented yet.
+A learning project for specifying a leased-job protocol in TLA+, implementing it in Rust, and testing the running system from Python with Hypothesis. The workspace currently includes the contract, TLA+ model, a pure `scheduler-core` transition crate, and a coordinator health endpoint.
 
 ## Prerequisites
 
@@ -49,4 +49,4 @@ TEST_RUN_NAME=phase-0-baseline scripts/test-system.sh
 
 The protocol is in [`docs/protocol.md`](docs/protocol.md), and requirement-to-evidence mappings are in [`docs/traceability.md`](docs/traceability.md). The Phase 1 model checks S1-S5 over a finite safety configuration and L1 over a smaller configuration with explicit fairness assumptions. The stale mutation command succeeds only when TLC finds the expected S2 violation. The script downloads TLA+ Tools 1.7.4 and verifies its published checksum.
 
-Rust scheduler transitions, worker behavior, test/debug routes, and stateful Hypothesis tests remain future work. The original project guide is in [`verified_scheduler_project.md`](verified_scheduler_project.md).
+Scheduler HTTP endpoints, worker behavior, test/debug routes, and stateful Hypothesis tests remain future work. The original project guide is in [`verified_scheduler_project.md`](verified_scheduler_project.md).

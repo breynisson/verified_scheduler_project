@@ -4,14 +4,14 @@ This table tracks how the written requirements map into the abstract model and, 
 
 | Requirement | TLA+ model | Rust behavior | Python/Hypothesis evidence | Current evidence |
 | --- | --- | --- | --- | --- |
-| S1: each job has at most one accepted terminal completion | `Complete`, `commits`, `S1_UniqueAcceptedCommit` | Not implemented | Not implemented | TLC safety run: no violation in configured bounds |
-| S2: only the current owner and fencing token may complete an unexpired lease | `Acquire`, `Complete`, `leaseHistory`, `S2_FencedCompletion` | Not implemented | Not implemented | TLC safety run: no violation; deliberate mutation: seven-state counterexample |
-| S3: completed and permanently failed jobs stay terminal | `terminalJobs`, `S3_TerminalMonotonicity` | Not implemented | Not implemented | TLC safety run: no violation in configured bounds |
-| S4: each job has at most one current lease | Single lease fields per job, `S4_LeaseUniqueness` | Not implemented | Not implemented | TLC safety run: no violation in configured bounds |
-| S5: attempts do not exceed three and exhaustion fails permanently | `MaxAttempts`, `Acquire`, `Expire`, `S5_RetryBound` | Not implemented | Not implemented | TLC safety run: no violation in configured bounds |
-| Lease is expired exactly when `now >= expiry` | `Complete` requires `now < leaseExpiry[j]`; `Expire` requires `now >= leaseExpiry[j]` | Not implemented | Not implemented | Exercised by safety model and stale counterexample boundary |
-| Crashed workers cannot acquire or complete | `Crash`; guards in `Acquire` and `Complete` | Not implemented | Not implemented | TLC safety run: no violation in configured bounds |
-| L1: a submitted job eventually becomes terminal under progress assumptions | `ProgressSpec`, `L1_EventualTerminal` | Not implemented | Not implemented | Bounded TLC liveness run: no violation under documented assumptions |
+| S1: each job has at most one accepted terminal completion | `Complete`, `commits`, `S1_UniqueAcceptedCommit` | `Scheduler::complete`; completed jobs reject later transitions | Not implemented | TLC safety run: no violation in configured bounds; Rust `terminal_states_are_monotonic` passes |
+| S2: only the current owner and fencing token may complete an unexpired lease | `Acquire`, `Complete`, `leaseHistory`, `S2_FencedCompletion` | `Scheduler::complete` checks expiry, owner, then token before mutation | Not implemented | TLC safety run: no violation; deliberate mutation: seven-state counterexample; Rust `stale_fencing_token_is_rejected_without_mutation` passes |
+| S3: completed and permanently failed jobs stay terminal | `terminalJobs`, `S3_TerminalMonotonicity` | Terminal statuses cannot be acquired, completed, or expired | Not implemented | TLC safety run: no violation in configured bounds; Rust `terminal_states_are_monotonic` passes |
+| S4: each job has at most one current lease | Single lease fields per job, `S4_LeaseUniqueness` | Each `Job` contains at most one optional `Lease`; acquire requires `pending` | Not implemented | TLC safety run: no violation in configured bounds; Rust `acquisition_creates_a_lease_and_increments_attempt_and_token` passes |
+| S5: attempts do not exceed three and exhaustion fails permanently | `MaxAttempts`, `Acquire`, `Expire`, `S5_RetryBound` | `MAX_ATTEMPTS`; acquire increments attempts; third expiry fails the job | Not implemented | TLC safety run: no violation in configured bounds; Rust `third_expired_attempt_exhausts_retries_and_fails_job` passes |
+| Lease is expired exactly when `now >= expiry` | `Complete` requires `now < leaseExpiry[j]`; `Expire` requires `now >= leaseExpiry[j]` | `advance_time` atomically expires every due lease using `now >= expiry` | Not implemented | Exercised by safety model and stale counterexample boundary; Rust `lease_expires_at_the_exact_expiry_boundary` passes |
+| Crashed workers cannot acquire or complete | `Crash`; guards in `Acquire` and `Complete` | Test-support `Scheduler::crash`; acquire and complete reject crashed workers | Not implemented | TLC safety run: no violation in configured bounds; Rust `crashed_worker_cannot_acquire_or_complete` passes |
+| L1: a submitted job eventually becomes terminal under progress assumptions | `ProgressSpec`, `L1_EventualTerminal` | Pure transitions only; no runtime progress mechanism or liveness claim | Not implemented | Bounded TLC liveness run: no violation under documented assumptions |
 
 ## Model-to-interface differences
 
@@ -34,3 +34,9 @@ The initial `Scheduler.cfg` run used two jobs, two workers, `MaxAttempts = 3`, `
 The `SchedulerLiveness.cfg` run used one job, two workers, `MaxAttempts = 3`, `LeaseLength = 1`, and logical time `0..3`. TLC completed temporal-property checking over 244 distinct states at depth 11 without finding a violation of `L1_EventualTerminal` under `ProgressSpec`.
 
 The deliberate stale-completion configuration used one job, two workers, a lease length of one, and logical time `0..3`. Its checked-in counterexample is in [`spec/tla/counterexamples/stale-completion.md`](../spec/tla/counterexamples/stale-completion.md).
+
+## Phase 2 core evidence
+
+On 2026-09-29, `cargo test -p scheduler-core` passed seven focused unit tests covering submission, acquisition, the exact expiry boundary, retry exhaustion, terminal monotonicity, stale fencing tokens, and crashed-worker guards. `cargo test --workspace` also passed. These are implementation tests, not proofs. Failure injection and complete state lookup are available only to crate tests or consumers that explicitly enable the `test-support` feature.
+
+The same change was checked against the existing artifacts: `scripts/check-spec.sh safety` completed all 1,147,008 distinct configured states without finding an invariant violation; `scripts/check-spec.sh liveness` completed temporal checking over 244 distinct configured states without finding a violation; and `scripts/check-spec.sh stale-mutation` reproduced the expected seven-state `S2_FencedCompletion` violation. `TEST_RUN_NAME=phase-2-core scripts/test-system.sh` passed the existing health-only black-box test. Scheduler HTTP behavior remains outside this change, so the stale trace has not yet been exercised through the running service.

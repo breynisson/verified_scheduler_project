@@ -1,2 +1,3 @@
 [workspace]
-members = ["services/coordinator"]
+members = ["services/coordinator", "services/scheduler-core"]
+resolver = "2"

@@ -4,7 +4,7 @@ A learning project for specifying a leased-job protocol in TLA+, implementing it
 
 ## Prerequisites
 
-- Rust with Cargo (the scaffold is compatible with Rust 1.42 or newer)
+- Rust 1.98.1 with Cargo (installed automatically by `rustup` from `rust-toolchain.toml`)
 - Python 3.11 or newer
 
 ## Run the coordinator

@@ -47,6 +47,6 @@ TEST_RUN_NAME=phase-0-baseline scripts/test-system.sh
 
 ## Current scope
 
-The protocol is in [`docs/protocol.md`](docs/protocol.md), and requirement-to-evidence mappings are in [`docs/traceability.md`](docs/traceability.md). The Phase 1 model checks S1-S5 over a finite safety configuration and L1 over a smaller configuration with explicit fairness assumptions. The stale mutation command succeeds only when TLC finds the expected S2 violation. The script downloads TLA+ Tools 1.7.4 and verifies its published checksum.
+Start with [`docs/context.md`](docs/context.md) for a concise project map. The normative protocol is in [`docs/protocol.md`](docs/protocol.md), and requirement-to-evidence mappings are in [`docs/traceability.md`](docs/traceability.md). The Phase 1 model checks S1-S5 over a finite safety configuration and L1 over a smaller configuration with explicit fairness assumptions. The stale mutation command succeeds only when TLC finds the expected S2 violation. The script downloads TLA+ Tools 1.7.4 and verifies its published checksum.
 
 Worker behavior, persistence, and concurrency testing remain future work. The in-memory coordinator exposes the scheduler API, and the Phase 3 Hypothesis state machine compares it with an independent Python reference model after every generated command. Failure injection and state inspection are gated by `--test-mode`. The original project guide is in [`verified_scheduler_project.md`](verified_scheduler_project.md).

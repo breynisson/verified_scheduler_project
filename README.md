@@ -15,6 +15,13 @@ cargo run --manifest-path services/coordinator/Cargo.toml -- --bind 127.0.0.1:80
 curl http://127.0.0.1:8080/health
 ```
 
+Add `--db scheduler.sqlite3` to persist state across coordinator restarts. To run a worker for one acquisition/completion cycle:
+
+```sh
+cargo run --manifest-path services/worker/Cargo.toml -- \
+  --coordinator 127.0.0.1:8080 --id worker-1 --once
+```
+
 Expected response:
 
 ```json
@@ -49,4 +56,4 @@ TEST_RUN_NAME=phase-0-baseline scripts/test-system.sh
 
 Start with [`docs/context.md`](docs/context.md) for a concise project map. The normative protocol is in [`docs/protocol.md`](docs/protocol.md), and requirement-to-evidence mappings are in [`docs/traceability.md`](docs/traceability.md). The Phase 1 model checks S1-S5 over a finite safety configuration and L1 over a smaller configuration with explicit fairness assumptions. The stale mutation command succeeds only when TLC finds the expected S2 violation. The script downloads TLA+ Tools 1.7.4 and verifies its published checksum.
 
-Worker behavior, persistence, and concurrency testing remain future work. The in-memory coordinator exposes the scheduler API, and the Phase 3 Hypothesis state machine compares it with an independent Python reference model after every generated command. Failure injection and state inspection are gated by `--test-mode`. The original project guide is in [`verified_scheduler_project.md`](verified_scheduler_project.md).
+The coordinator supports optional SQLite persistence, a replaceable worker process, restart recovery tests, and bounded competing-acquisition scenarios. The Hypothesis state machine compares the running service with an independent Python reference model after every generated command. Failure injection and state inspection are gated by `--test-mode`. Multi-coordinator behavior and general linearizability checking remain future work. The original project guide is in [`verified_scheduler_project.md`](verified_scheduler_project.md).

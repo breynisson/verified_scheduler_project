@@ -18,7 +18,7 @@ Verified Scheduler is a learning project for connecting four forms of reasoning 
 - a Rust implementation; and
 - black-box Python tests, including a Hypothesis state machine and independent reference model.
 
-Phases 0–3 are complete and tagged `Phase0` through `Phase3`. The repository currently contains an in-memory, single-coordinator scheduler with deterministic logical time. Phase 4 is the next planned milestone: worker processes, SQLite persistence, restart recovery, and selected concurrency scenarios.
+Phases 0–3 are complete and tagged `Phase0` through `Phase3`. Phase 4 adds a worker process, optional SQLite persistence, restart recovery, and selected concurrent-request scenarios while retaining deterministic logical time and a single coordinator.
 
 No test result should be described as a proof. TLC results apply to the documented finite model configurations, while Rust and Python tests provide evidence about selected implementation executions.
 
@@ -62,9 +62,9 @@ The accepted in-memory coordinator policy is documented in [`0001-phase-2-http-p
 - duplicate submission is always a conflict;
 - crash markers last for the process lifetime;
 - requests are limited to 64 KiB; and
-- one connection is processed at a time, serializing coordinator transitions.
+- connections are handled concurrently while coordinator transitions and persistence commits serialize through one process-local mutex.
 
-`scheduler-core` is a dependency-free Rust crate containing pure domain transitions. The coordinator owns HTTP parsing, JSON serialization, the in-memory scheduler instance, and the accepted-commit diagnostic log.
+`scheduler-core` is a dependency-free Rust crate containing pure domain transitions and a validated snapshot/restore boundary. The coordinator owns HTTP parsing, JSON serialization, the scheduler instance, SQLite state snapshots, and the accepted-commit diagnostic log. Phase 4 persistence and concurrency choices are recorded in [`0002-phase-4-persistence-and-concurrency.md`](decisions/0002-phase-4-persistence-and-concurrency.md).
 
 The TLA+ model represents `Tick` and `Expire` as separate actions. The HTTP test operation advances time and processes all resulting expirations atomically before returning, so clients cannot observe the intermediate state.
 
@@ -74,7 +74,8 @@ The TLA+ model represents `Tick` and `Expire` as separate actions. The HTTP test
 | --- | --- |
 | `spec/tla/` | Abstract scheduler, finite TLC configurations, and deliberate stale-completion mutation |
 | `services/scheduler-core/` | Pure Rust state and transitions |
-| `services/coordinator/` | Sequential HTTP boundary and in-memory coordinator |
+| `services/coordinator/` | Concurrent HTTP boundary, serialized transitions, and optional SQLite persistence |
+| `services/worker/` | Replaceable HTTP worker process used in crash and replacement scenarios |
 | `verification/python/scheduler_verification/` | Adapter, independent reference model, strategies, and trace replay |
 | `verification/python/tests/` | Example-based, stateful, mutation, and regression tests |
 | `scripts/check-spec.sh` | Reproducible TLC safety, liveness, and mutation runs |
@@ -117,10 +118,14 @@ The following routes require `--test-mode` and otherwise return `503 test_mode_d
 ```text
 POST /test/advance-time
 POST /test/workers/{worker_id}/crash
+POST /test/fail-next-persist
+POST /test/fail-next-persist-after-write
 GET  /debug/state
 ```
 
 The `--fault-accept-stale-token` mutation is valid only together with `--test-mode`. It is verification instrumentation, not an alternative production configuration.
+
+The worker's `--test-pause-before-complete-ms` and `--test-start-gate` controls likewise require its `--test-mode` flag.
 
 Debug state currently includes logical time, ordered jobs, ordered crashed workers, and an accepted-commit log. The commit log exists to make safety properties observable to the harness.
 
@@ -128,9 +133,8 @@ Debug state currently includes logical time, ordered jobs, ordered crashed worke
 
 The current system is intentionally bounded and incomplete:
 
-- state is lost when the coordinator exits;
-- there is no worker process;
-- HTTP requests are handled sequentially;
+- persistence uses one versioned JSON snapshot rather than normalized relational tables;
+- concurrent transitions are serialized through one process-local mutex;
 - there is no multi-coordinator protocol;
 - no real-time clock participates in lease validity;
 - generated histories use small finite domains and budgets;

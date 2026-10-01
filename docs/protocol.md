@@ -1,6 +1,6 @@
 # Scheduler protocol contract
 
-This document fixes the protocol choices that TLA+, Rust, and Python implementations must share. Phase 2 implements the scheduler operations below with an in-memory coordinator; later phases extend the verification harness, worker behavior, and persistence.
+This document fixes the protocol choices that TLA+, Rust, and Python implementations must share. The coordinator persists its state when started with a database path, while retaining an in-memory mode for isolated tests.
 
 ## State and lifecycle
 
@@ -35,6 +35,8 @@ All bodies are JSON and successful JSON responses use `Content-Type: application
 | Complete | `POST /jobs/{job_id}/complete` with `{"worker_id": string, "token": integer}` | `200` with the completed job |
 | Advance clock (test mode) | `POST /test/advance-time` with `{"delta": positive integer}` | `200` with current time |
 | Crash worker (test mode) | `POST /test/workers/{worker_id}/crash` | `204` |
+| Fail next persistence (test mode) | `POST /test/fail-next-persist` | `204` |
+| Fail after next transactional write (test mode) | `POST /test/fail-next-persist-after-write` | `204` |
 | Inspect state (test mode) | `GET /debug/state` | `200` with the complete observable state |
 
 Expiry processing is an atomic coordinator transition performed after logical time advances and before the advance-time response is returned. Later implementations must define a deterministic ordering for multiple expirations in their observable diagnostic log.
@@ -66,12 +68,15 @@ Clients must branch on `code`, not `message`. No error response changes state.
 | 409 | `stale_fencing_token` | Completion token is not the current lease token |
 | 409 | `lease_expired` | Completion is received when `now >= expiry` |
 | 503 | `test_mode_disabled` | A test/debug endpoint is unavailable outside test mode |
+| 500 | `internal_error` | An accepted in-memory transition could not be committed and was rolled back |
 
 For completion validation, errors take this precedence: unknown job, terminal/otherwise invalid job state, expired lease, owner mismatch, then stale token. This makes one invalid request produce one deterministic response without exposing token details for an expired lease.
 
 ## Atomicity and scope
 
-Each HTTP scheduler operation will be one atomic transition at a single coordinator. Concurrent and multi-coordinator behavior is outside the initial protocol. Coordinator fencing prevents an old lease from committing at the coordinator; it does not make external side effects exactly-once.
+Each HTTP scheduler operation is one atomic transition at a single coordinator. Concurrent connections are serialized at the transition boundary. When persistence is enabled, an accepted mutation is committed to SQLite before its successful response is sent. Multi-coordinator behavior remains outside the protocol. Coordinator fencing prevents an old lease from committing at the coordinator; it does not make external side effects exactly-once.
+
+Coordinator restart does not advance logical time. Jobs, attempts, fencing-token counters, active leases, crash markers, and accepted commits survive a restart when persistence is enabled. A lease that was valid before shutdown remains valid until an explicit clock advance reaches its expiry.
 
 ## Decisions intentionally left open
 

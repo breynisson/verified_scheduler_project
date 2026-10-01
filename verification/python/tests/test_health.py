@@ -266,6 +266,24 @@ def test_debug_and_failure_injection_require_test_mode(
     assert status == 503
     assert response["error"]["code"] == "test_mode_disabled"
 
+    status, response = request_json(
+        production_coordinator_url,
+        artifact_dir,
+        "POST",
+        "/test/fail-next-persist",
+    )
+    assert status == 503
+    assert response["error"]["code"] == "test_mode_disabled"
+
+    status, response = request_json(
+        production_coordinator_url,
+        artifact_dir,
+        "POST",
+        "/test/fail-next-persist-after-write",
+    )
+    assert status == 503
+    assert response["error"]["code"] == "test_mode_disabled"
+
 
 def test_crashed_worker_cannot_complete_current_lease(coordinator_url, artifact_dir):
     request_json(

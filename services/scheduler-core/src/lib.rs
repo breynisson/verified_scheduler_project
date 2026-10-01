@@ -36,6 +36,7 @@ pub struct Job<P> {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TransitionError {
     InvalidLeaseDuration,
+    InvalidPersistedState,
     InvalidTimeDelta,
     TimeOverflow,
     JobAlreadyExists,
@@ -53,7 +54,15 @@ pub struct ExpiredJob {
     pub status: JobStatus,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SchedulerState<P> {
+    pub now: u64,
+    pub lease_duration: u64,
+    pub jobs: Vec<Job<P>>,
+    pub crashed_workers: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
 pub struct Scheduler<P> {
     now: u64,
     lease_duration: u64,
@@ -77,6 +86,53 @@ impl<P> Scheduler<P> {
 
     pub fn now(&self) -> u64 {
         self.now
+    }
+
+    pub fn from_state(state: SchedulerState<P>) -> Result<Self, TransitionError> {
+        if state.lease_duration == 0 {
+            return Err(TransitionError::InvalidLeaseDuration);
+        }
+
+        let mut jobs = BTreeMap::new();
+        for job in state.jobs {
+            if job.id.is_empty()
+                || job.attempts > MAX_ATTEMPTS
+                || job.token != job.attempts
+                || (job.status == JobStatus::Pending && job.attempts >= MAX_ATTEMPTS)
+                || (job.status == JobStatus::Completed && job.attempts == 0)
+                || (job.status == JobStatus::Failed && job.attempts != MAX_ATTEMPTS)
+            {
+                return Err(TransitionError::InvalidPersistedState);
+            }
+            match (&job.status, &job.lease) {
+                (JobStatus::Leased, Some(lease))
+                    if !lease.worker_id.is_empty()
+                        && lease.token == job.token
+                        && lease.token > 0
+                        && state.now < lease.expiry => {}
+                (JobStatus::Leased, _) => return Err(TransitionError::InvalidPersistedState),
+                (_, Some(_)) => return Err(TransitionError::InvalidPersistedState),
+                (_, None) => {}
+            }
+            if jobs.insert(job.id.clone(), job).is_some() {
+                return Err(TransitionError::InvalidPersistedState);
+            }
+        }
+
+        if state.crashed_workers.iter().any(String::is_empty) {
+            return Err(TransitionError::InvalidPersistedState);
+        }
+        let crashed_worker_count = state.crashed_workers.len();
+        let crashed_workers = state.crashed_workers.into_iter().collect::<BTreeSet<_>>();
+        if crashed_workers.len() != crashed_worker_count {
+            return Err(TransitionError::InvalidPersistedState);
+        }
+        Ok(Self {
+            now: state.now,
+            lease_duration: state.lease_duration,
+            jobs,
+            crashed_workers,
+        })
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -226,6 +282,17 @@ impl<P> Scheduler<P> {
             });
         }
         Ok(expired)
+    }
+}
+
+impl<P: Clone> Scheduler<P> {
+    pub fn snapshot(&self) -> SchedulerState<P> {
+        SchedulerState {
+            now: self.now,
+            lease_duration: self.lease_duration,
+            jobs: self.jobs.values().cloned().collect(),
+            crashed_workers: self.crashed_workers.iter().cloned().collect(),
+        }
     }
 }
 
@@ -391,5 +458,94 @@ mod tests {
             Err(TransitionError::WorkerCrashed)
         );
         assert_eq!(scheduler.job("job-1").unwrap().status, JobStatus::Leased);
+    }
+
+    #[test]
+    fn snapshot_round_trip_preserves_active_lease_and_crashes() {
+        let mut scheduler = scheduler();
+        scheduler.submit("job-1".into(), "payload").unwrap();
+        scheduler.acquire("worker-1", "job-1").unwrap();
+        scheduler.crash("worker-2");
+
+        let snapshot = scheduler.snapshot();
+        let restored = Scheduler::from_state(snapshot.clone()).unwrap();
+
+        assert_eq!(restored.snapshot(), snapshot);
+    }
+
+    #[test]
+    fn restore_rejects_inconsistent_persisted_state() {
+        let state = SchedulerState {
+            now: 1,
+            lease_duration: 1,
+            jobs: vec![Job {
+                id: "job-1".into(),
+                payload: "payload",
+                status: JobStatus::Leased,
+                attempts: 1,
+                token: 1,
+                lease: Some(Lease {
+                    worker_id: "worker-1".into(),
+                    token: 1,
+                    expiry: 1,
+                }),
+            }],
+            crashed_workers: Vec::new(),
+        };
+
+        assert!(matches!(
+            Scheduler::from_state(state),
+            Err(TransitionError::InvalidPersistedState)
+        ));
+    }
+
+    #[test]
+    fn restore_rejects_unreachable_completed_job_and_invalid_identifiers() {
+        let completed_without_attempt = SchedulerState {
+            now: 0,
+            lease_duration: 1,
+            jobs: vec![Job {
+                id: "job-1".into(),
+                payload: "payload",
+                status: JobStatus::Completed,
+                attempts: 0,
+                token: 0,
+                lease: None,
+            }],
+            crashed_workers: Vec::new(),
+        };
+        assert!(matches!(
+            Scheduler::from_state(completed_without_attempt),
+            Err(TransitionError::InvalidPersistedState)
+        ));
+
+        let empty_job_id = SchedulerState {
+            now: 0,
+            lease_duration: 1,
+            jobs: vec![Job {
+                id: String::new(),
+                payload: "payload",
+                status: JobStatus::Pending,
+                attempts: 0,
+                token: 0,
+                lease: None,
+            }],
+            crashed_workers: Vec::new(),
+        };
+        assert!(matches!(
+            Scheduler::from_state(empty_job_id),
+            Err(TransitionError::InvalidPersistedState)
+        ));
+
+        let invalid_crash_markers = SchedulerState::<&str> {
+            now: 0,
+            lease_duration: 1,
+            jobs: Vec::new(),
+            crashed_workers: vec!["worker-1".into(), "worker-1".into()],
+        };
+        assert!(matches!(
+            Scheduler::from_state(invalid_crash_markers),
+            Err(TransitionError::InvalidPersistedState)
+        ));
     }
 }

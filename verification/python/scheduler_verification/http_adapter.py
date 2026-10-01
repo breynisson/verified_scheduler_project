@@ -13,10 +13,17 @@ COORDINATOR_MANIFEST = REPOSITORY_ROOT / "services" / "coordinator" / "Cargo.tom
 
 
 class CoordinatorProcess:
-    def __init__(self, artifact_dir: pathlib.Path, name: str, fault: bool = False):
+    def __init__(
+        self,
+        artifact_dir: pathlib.Path,
+        name: str,
+        fault: bool = False,
+        database_path: pathlib.Path | None = None,
+    ):
         self.artifact_dir = artifact_dir
         self.name = name
         self.fault = fault
+        self.database_path = database_path
         self.process = None
         self.url = None
 
@@ -39,6 +46,8 @@ class CoordinatorProcess:
         ]
         if self.fault:
             command.append("--fault-accept-stale-token")
+        if self.database_path is not None:
+            command.extend(["--db", str(self.database_path)])
         self.process = subprocess.Popen(
             command,
             cwd=REPOSITORY_ROOT,
@@ -125,6 +134,12 @@ class HttpAdapter:
 
     def advance_time(self, delta: int) -> Outcome:
         return self._request("POST", "/test/advance-time", {"delta": delta})
+
+    def fail_next_persist(self) -> Outcome:
+        return self._request("POST", "/test/fail-next-persist")
+
+    def fail_next_persist_after_write(self) -> Outcome:
+        return self._request("POST", "/test/fail-next-persist-after-write")
 
     def state(self) -> dict:
         outcome = self._request("GET", "/debug/state")

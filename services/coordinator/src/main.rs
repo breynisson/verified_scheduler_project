@@ -1,8 +1,14 @@
-use scheduler_core::{Job, JobStatus, Scheduler, TransitionError};
+mod storage;
+
+use scheduler_core::{Job, JobStatus, Scheduler, SchedulerState, TransitionError};
 use serde_json::{json, Map, Value};
 use std::env;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use std::thread;
+use storage::StateStore;
 
 const LEASE_DURATION: u64 = 1;
 const MAX_REQUEST_BYTES: usize = 64 * 1024;
@@ -11,6 +17,7 @@ struct Config {
     bind_address: String,
     test_mode: bool,
     accept_stale_token_fault: bool,
+    database_path: Option<PathBuf>,
 }
 
 struct HttpRequest {
@@ -46,16 +53,46 @@ struct Coordinator {
     test_mode: bool,
     accept_stale_token_fault: bool,
     commits: Vec<Value>,
+    store: StateStore,
 }
 
 impl Coordinator {
-    fn new(test_mode: bool, accept_stale_token_fault: bool) -> Self {
-        Self {
-            scheduler: Scheduler::new(LEASE_DURATION).expect("lease duration must be positive"),
+    fn new(
+        test_mode: bool,
+        accept_stale_token_fault: bool,
+        database_path: Option<PathBuf>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let mut store = StateStore::open(database_path.as_deref())?;
+        let persisted = store.load(LEASE_DURATION)?;
+        let (scheduler, commits) = match persisted {
+            Some(state) => (state.scheduler, state.commits),
+            None => (
+                Scheduler::new(LEASE_DURATION).expect("lease duration must be positive"),
+                Vec::new(),
+            ),
+        };
+        store.save(&scheduler, &commits)?;
+        Ok(Self {
+            scheduler,
             test_mode,
             accept_stale_token_fault,
-            commits: Vec::new(),
+            commits,
+            store,
+        })
+    }
+
+    fn persist_or_rollback(
+        &mut self,
+        scheduler_before: SchedulerState<Value>,
+        commits_before: Vec<Value>,
+    ) -> Result<(), HttpResponse> {
+        if self.store.save(&self.scheduler, &self.commits).is_ok() {
+            return Ok(());
         }
+        self.scheduler = Scheduler::from_state(scheduler_before)
+            .expect("previous scheduler snapshot must remain valid");
+        self.commits = commits_before;
+        Err(internal_error())
     }
 
     fn route(&mut self, request: HttpRequest) -> HttpResponse {
@@ -101,14 +138,41 @@ impl Coordinator {
             };
         }
 
+        if request.path == "/test/fail-next-persist" {
+            return if request.method != "POST" {
+                method_not_allowed()
+            } else if !self.test_mode {
+                test_mode_disabled()
+            } else {
+                self.store.fail_next_save();
+                HttpResponse::empty("204 No Content")
+            };
+        }
+
+        if request.path == "/test/fail-next-persist-after-write" {
+            return if request.method != "POST" {
+                method_not_allowed()
+            } else if !self.test_mode {
+                test_mode_disabled()
+            } else {
+                self.store.fail_next_save_after_write();
+                HttpResponse::empty("204 No Content")
+            };
+        }
+
         if let Some(worker_id) = path_parameter(&request.path, "/test/workers/", "/crash") {
             return if request.method != "POST" {
                 method_not_allowed()
             } else if !self.test_mode {
                 test_mode_disabled()
             } else {
+                let scheduler_before = self.scheduler.snapshot();
+                let commits_before = self.commits.clone();
                 self.scheduler.crash(worker_id);
-                HttpResponse::empty("204 No Content")
+                match self.persist_or_rollback(scheduler_before, commits_before) {
+                    Ok(()) => HttpResponse::empty("204 No Content"),
+                    Err(response) => response,
+                }
             };
         }
 
@@ -137,15 +201,31 @@ impl Coordinator {
             return invalid_request("payload must be an object");
         };
 
+        let scheduler_before = self.scheduler.snapshot();
+        let commits_before = self.commits.clone();
         match self.scheduler.submit(job_id.to_owned(), payload.clone()) {
-            Ok(job) => HttpResponse::json("201 Created", job_json(job)),
+            Ok(job) => {
+                let body = job_json(job);
+                match self.persist_or_rollback(scheduler_before, commits_before) {
+                    Ok(()) => HttpResponse::json("201 Created", body),
+                    Err(response) => response,
+                }
+            }
             Err(error) => transition_error(error),
         }
     }
 
     fn acquire(&mut self, worker_id: &str) -> HttpResponse {
+        let scheduler_before = self.scheduler.snapshot();
+        let commits_before = self.commits.clone();
         match self.scheduler.acquire_next(worker_id) {
-            Ok(Some(job)) => HttpResponse::json("200 OK", job_json(job)),
+            Ok(Some(job)) => {
+                let body = job_json(job);
+                match self.persist_or_rollback(scheduler_before, commits_before) {
+                    Ok(()) => HttpResponse::json("200 OK", body),
+                    Err(response) => response,
+                }
+            }
             Ok(None) => HttpResponse::empty("204 No Content"),
             Err(error) => transition_error(error),
         }
@@ -185,9 +265,12 @@ impl Coordinator {
         };
         let accepted_at = self.scheduler.now();
 
+        let scheduler_before = self.scheduler.snapshot();
+        let commits_before = self.commits.clone();
         match self.scheduler.complete(worker_id, job_id, effective_token) {
             Ok(job) => {
                 let (_, _, expiry) = current_lease.expect("accepted completion had a lease");
+                let body = job_json(job);
                 self.commits.push(json!({
                     "job_id": job_id,
                     "worker_id": worker_id,
@@ -195,7 +278,10 @@ impl Coordinator {
                     "accepted_at": accepted_at,
                     "expiry": expiry,
                 }));
-                HttpResponse::json("200 OK", job_json(job))
+                match self.persist_or_rollback(scheduler_before, commits_before) {
+                    Ok(()) => HttpResponse::json("200 OK", body),
+                    Err(response) => response,
+                }
             }
             Err(error) => transition_error(error),
         }
@@ -214,10 +300,11 @@ impl Coordinator {
             return invalid_request("delta must be a positive integer");
         };
 
+        let scheduler_before = self.scheduler.snapshot();
+        let commits_before = self.commits.clone();
         match self.scheduler.advance_time(delta) {
-            Ok(expired) => HttpResponse::json(
-                "200 OK",
-                json!({
+            Ok(expired) => {
+                let body = json!({
                     "now": self.scheduler.now(),
                     "expired": expired
                         .into_iter()
@@ -226,8 +313,12 @@ impl Coordinator {
                             "status": status_name(job.status),
                         }))
                         .collect::<Vec<_>>(),
-                }),
-            ),
+                });
+                match self.persist_or_rollback(scheduler_before, commits_before) {
+                    Ok(()) => HttpResponse::json("200 OK", body),
+                    Err(response) => response,
+                }
+            }
             Err(error) => transition_error(error),
         }
     }
@@ -248,14 +339,27 @@ impl Coordinator {
 fn main() -> std::io::Result<()> {
     let config = parse_config()?;
     let listener = TcpListener::bind(&config.bind_address)?;
-    let mut coordinator = Coordinator::new(config.test_mode, config.accept_stale_token_fault);
+    let coordinator = Coordinator::new(
+        config.test_mode,
+        config.accept_stale_token_fault,
+        config.database_path,
+    )
+    .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error.to_string()))?;
+    let coordinator = Arc::new(Mutex::new(coordinator));
 
     println!("LISTENING {}", listener.local_addr()?);
     std::io::stdout().flush()?;
 
     for stream in listener.incoming() {
         match stream {
-            Ok(stream) => handle_connection(stream, &mut coordinator)?,
+            Ok(stream) => {
+                let coordinator = Arc::clone(&coordinator);
+                thread::spawn(move || {
+                    if let Err(error) = handle_connection(stream, &coordinator) {
+                        eprintln!("failed to handle connection: {error}");
+                    }
+                });
+            }
             Err(error) => eprintln!("failed to accept connection: {}", error),
         }
     }
@@ -267,6 +371,7 @@ fn parse_config() -> std::io::Result<Config> {
     let mut bind_address = "127.0.0.1:8080".to_owned();
     let mut test_mode = false;
     let mut accept_stale_token_fault = false;
+    let mut database_path = None;
     let mut args = env::args().skip(1);
 
     while let Some(arg) = args.next() {
@@ -274,6 +379,7 @@ fn parse_config() -> std::io::Result<Config> {
             "--bind" => bind_address = args.next().ok_or_else(usage_error)?,
             "--test-mode" => test_mode = true,
             "--fault-accept-stale-token" => accept_stale_token_fault = true,
+            "--db" => database_path = Some(PathBuf::from(args.next().ok_or_else(usage_error)?)),
             _ => return Err(usage_error()),
         }
     }
@@ -286,19 +392,26 @@ fn parse_config() -> std::io::Result<Config> {
         bind_address,
         test_mode,
         accept_stale_token_fault,
+        database_path,
     })
 }
 
 fn usage_error() -> std::io::Error {
     std::io::Error::new(
         std::io::ErrorKind::InvalidInput,
-        "usage: coordinator [--bind ADDRESS] [--test-mode] [--fault-accept-stale-token]",
+        "usage: coordinator [--bind ADDRESS] [--test-mode] [--fault-accept-stale-token] [--db PATH]",
     )
 }
 
-fn handle_connection(mut stream: TcpStream, coordinator: &mut Coordinator) -> std::io::Result<()> {
+fn handle_connection(
+    mut stream: TcpStream,
+    coordinator: &Arc<Mutex<Coordinator>>,
+) -> std::io::Result<()> {
     let response = match read_request(&mut stream) {
-        Ok(request) => coordinator.route(request),
+        Ok(request) => coordinator
+            .lock()
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "coordinator poisoned"))?
+            .route(request),
         Err(()) => invalid_request("malformed HTTP request"),
     };
     write_response(&mut stream, response)
@@ -448,6 +561,7 @@ fn transition_error(error: TransitionError) -> HttpResponse {
             "fencing token is not current",
         ),
         TransitionError::InvalidLeaseDuration
+        | TransitionError::InvalidPersistedState
         | TransitionError::InvalidTimeDelta
         | TransitionError::TimeOverflow => invalid_request("invalid logical time value"),
     }
@@ -470,5 +584,13 @@ fn test_mode_disabled() -> HttpResponse {
         "503 Service Unavailable",
         "test_mode_disabled",
         "test mode is disabled",
+    )
+}
+
+fn internal_error() -> HttpResponse {
+    HttpResponse::error(
+        "500 Internal Server Error",
+        "internal_error",
+        "coordinator state could not be persisted",
     )
 }
